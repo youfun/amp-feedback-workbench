@@ -1,0 +1,8 @@
+{
+  "baseUrl": "https://hono-feedback-duck.mp2026new.workers.dev",
+  "agentToken": "REPLACE_WITH_PERSONAL_TOKEN",
+  "projectId": 1,
+  "projectSlug": "demo",
+  "actorId": "local-amp",
+  "actorName": "Amp on box-mac"
+}

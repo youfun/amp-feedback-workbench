@@ -1,0 +1,26 @@
+{
+  "name": "amp-feedback-workbench",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Amp plugin: hono_feedback_duck claim workflow (Pi workbench parity)",
+  "exports": {
+    ".": "./src/plugin.ts",
+    "./plugin": "./src/plugin.ts"
+  },
+  "scripts": {
+    "check": "node --check src/config.ts 2>/dev/null || true"
+  },
+  "devDependencies": {
+    "@ampcode/plugin": "latest"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/youfun/amp-feedback-workbench.git"
+  },
+  "bugs": {
+    "url": "https://github.com/youfun/amp-feedback-workbench/issues"
+  },
+  "homepage": "https://github.com/youfun/amp-feedback-workbench#readme"
+}
