@@ -28,7 +28,14 @@ export interface FeedbackLink {
   title?: string | null;
 }
 
-export type FeedbackActorType = "human" | "pi_agent" | "droid_agent" | "amp_agent" | "system";
+export type FeedbackPriority = "urgent" | "high" | "medium" | "low";
+
+export type FeedbackActorType =
+  | "human"
+  | "pi_agent"
+  | "droid_agent"
+  | "amp_agent"
+  | "system";
 
 export interface FeedbackActor {
   type: FeedbackActorType;
@@ -57,7 +64,7 @@ export interface FeedbackItem {
   url: string | null;
   title: string | null;
   feedback_type: FeedbackType | string;
-  priority?: string | null;
+  priority?: FeedbackPriority | string | null;
   labels?: string[] | null;
   acceptance_criteria?: string | null;
   links?: FeedbackLink[] | null;
@@ -98,6 +105,15 @@ export interface FeedbackDetail {
   events: FeedbackEvent[];
   attachments?: FeedbackAttachment[];
   screenshot_url?: string | null;
+  agent_sessions?: Array<{
+    agent_type?: FeedbackActorType | string;
+    session_id?: string;
+    actor_id?: string | null;
+    actor_name?: string | null;
+    resume_command?: string | null;
+    first_seen_at?: string;
+    last_seen_at?: string;
+  }>;
 }
 
 export interface ActionResult {
@@ -115,9 +131,57 @@ export interface ListFeedbackParams {
   limit?: number;
 }
 
+export interface CreateFeedbackInput {
+  note?: string;
+  title?: string | null;
+  feedbackType?: FeedbackType | string;
+  labels?: string[] | string | null;
+  url?: string | null;
+  project_id?: number | string | null;
+  meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export type ReleaseStatus = "draft" | "published";
+
+export interface ProjectRelease {
+  id: number;
+  project_id?: number | string;
+  version: string;
+  title?: string | null;
+  notes_md?: string;
+  target_date?: string | null;
+  status: ReleaseStatus;
+  revision: number;
+  item_count?: number;
+  published_at?: string | null;
+}
+
+export interface ProjectReleaseItem {
+  id: number;
+  release_id: number;
+  feedback_id: number;
+  feedback?: FeedbackItem | null;
+}
+
+export interface ReleaseDetail {
+  release: ProjectRelease;
+  items: ProjectReleaseItem[];
+  events?: Array<{ id: number; action: string; inserted_at?: string }>;
+}
+
+export interface SubmitFeedbackResult {
+  ok: boolean;
+  id: number;
+  project_slug: string;
+  admin_url?: string;
+  [key: string]: unknown;
+}
+
 export interface StoredConfig {
   baseUrl?: string;
   agentToken?: string;
+  submitToken?: string;
   projectId?: number | string | null;
   projectSlug?: string | null;
   actorId?: string;
@@ -129,6 +193,7 @@ export interface AgentConfig {
   projectId?: number | string | null;
   projectSlug?: string | null;
   agentToken: string;
+  submitToken?: string;
   actorId: string;
   actorName: string;
   cwd?: string;

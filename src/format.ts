@@ -1,4 +1,4 @@
-import type { FeedbackEvent, FeedbackItem } from "./types.ts";
+import type { FeedbackEvent, FeedbackItem } from "./types.js";
 
 function clip(text: string | null | undefined, max = 72): string {
   if (!text) return "";
@@ -37,7 +37,6 @@ export function buildInjectMessage(
     claimRound?: number | null;
     extraPrompt?: string | null;
     events?: FeedbackEvent[];
-    attachmentPaths?: string[];
   } = {},
 ): string {
   const meta =
@@ -61,13 +60,6 @@ export function buildInjectMessage(
     ? `\nAcceptance criteria:\n${item.acceptance_criteria}`
     : "";
 
-  const attachments =
-    options.attachmentPaths && options.attachmentPaths.length
-      ? `\nLocal attachment paths:\n${options.attachmentPaths
-          .map((p) => `- ${p}`)
-          .join("\n")}`
-      : "";
-
   return `Please process this user feedback.
 
 Issue #: ${displayNo(item)}
@@ -89,7 +81,7 @@ Inserted at: ${item.inserted_at}
 ${ac}
 User description:
 ${item.note || "(no text note)"}
-${meta}${recentEvents}${attachments}
+${meta}${recentEvents}
 
 Workflow tools available:
 - feedback_start_processing
@@ -98,9 +90,15 @@ Workflow tools available:
 - feedback_add_link (optional PR/commit/branch/url)
 - feedback_submit_for_review (REQUIRED when done; never mark complete/done)
 - feedback_get / feedback_list / feedback_claim
+- feedback_upload_attachment (for screenshots/logs for this issue)
+- feedback_record_change / feedback_upload_changes
+- release_list / release_get / release_create / release_add_items
+- release_stage_current / release_draft_changelog / release_publish (human-only)
 
 Please analyze the issue, propose a fix or next step, and keep the feedback workflow updated via tools when appropriate.
 Use Feedback ID (internal) with workflow tools.
+
+Release safety: changed-file progress comments are not release membership. Only explicit release_add_items or release_stage_current may stage an issue.
 Never mark done yourself — verification is Web/admin only.${extra}
 `;
 }

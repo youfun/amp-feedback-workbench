@@ -1,11 +1,11 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import type { AgentConfig, FeedbackActor, StoredConfig } from "./types.ts";
+import type { AgentConfig, FeedbackActor, StoredConfig } from "./types.js";
 
 function env(name: string): string | undefined {
-  const v = process.env[name];
-  return v && v.trim() ? v.trim() : undefined;
+  const value = process.env[name];
+  return value && value.trim() ? value.trim() : undefined;
 }
 
 function asString(value: unknown): string | undefined {
@@ -15,17 +15,17 @@ function asString(value: unknown): string | undefined {
 function parseProjectId(value: unknown): string | number | null {
   if (value == null || value === "") return null;
   if (typeof value === "number" && Number.isFinite(value)) return value;
-  const s = String(value).trim();
-  if (!s) return null;
-  const n = Number(s);
-  return Number.isInteger(n) && n > 0 ? n : s;
+  const text = String(value).trim();
+  if (!text) return null;
+  const numeric = Number(text);
+  return Number.isInteger(numeric) && numeric > 0 ? numeric : text;
 }
 
 function readJson(path: string): StoredConfig | null {
   try {
     if (!existsSync(path)) return null;
-    const data = JSON.parse(readFileSync(path, "utf8"));
-    return data && typeof data === "object" ? (data as StoredConfig) : null;
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return parsed && typeof parsed === "object" ? (parsed as StoredConfig) : null;
   } catch {
     return null;
   }
@@ -34,13 +34,22 @@ function readJson(path: string): StoredConfig | null {
 function findUp(start: string, rel: string): string | null {
   let dir = start;
   for (let i = 0; i < 14; i++) {
-    const cand = join(dir, rel);
-    if (existsSync(cand)) return cand;
+    const candidate = join(dir, rel);
+    if (existsSync(candidate)) return candidate;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
   return null;
+}
+
+function pick(...values: unknown[]) {
+  for (const value of values) {
+    if (value == null) continue;
+    if (typeof value === "string" && !value.trim()) continue;
+    return value;
+  }
+  return undefined;
 }
 
 export function loadConfig(options: { cwd?: string } = {}): AgentConfig {
@@ -54,18 +63,10 @@ export function loadConfig(options: { cwd?: string } = {}): AgentConfig {
     join(homedir(), ".pi", "feedback-workbench", "config.json"),
   ].filter(Boolean) as string[];
 
-  const files = paths.map((p) => ({ path: p, data: readJson(p) }));
-  const first = files.find((f) => f.data)?.data || null;
-  const firstPath = files.find((f) => f.data)?.path;
-
-  const pick = (...vals: unknown[]) => {
-    for (const v of vals) {
-      if (v == null) continue;
-      if (typeof v === "string" && !v.trim()) continue;
-      return v;
-    }
-    return undefined;
-  };
+  const files = paths.map((path) => ({ path, data: readJson(path) }));
+  const match = files.find((entry) => entry.data);
+  const first = match?.data || null;
+  const firstPath = match?.path;
 
   const baseUrl = String(
     pick(
@@ -87,6 +88,15 @@ export function loadConfig(options: { cwd?: string } = {}): AgentConfig {
       first?.agentToken,
       "",
     ) ?? "",
+  );
+
+  const submitToken = asString(
+    pick(
+      env("AMP_FEEDBACK_SUBMIT_TOKEN"),
+      env("DROID_FEEDBACK_SUBMIT_TOKEN"),
+      env("PI_FEEDBACK_SUBMIT_TOKEN"),
+      first?.submitToken,
+    ),
   );
 
   const projectId =
@@ -128,12 +138,25 @@ export function loadConfig(options: { cwd?: string } = {}): AgentConfig {
   );
 
   let source = "default";
-  if (env("AMP_FEEDBACK_AGENT_TOKEN") || env("PI_FEEDBACK_AGENT_TOKEN")) source = "env";
-  else if (firstPath) source = firstPath.includes(".pi") ? "pi-config" : firstPath.includes(".factory") ? "factory-config" : "amp-config";
+  if (
+    env("AMP_FEEDBACK_AGENT_TOKEN") ||
+    env("AMP_FEEDBACK_SUBMIT_TOKEN") ||
+    env("PI_FEEDBACK_AGENT_TOKEN") ||
+    env("PI_FEEDBACK_SUBMIT_TOKEN")
+  ) {
+    source = "env";
+  } else if (firstPath) {
+    source = firstPath.includes(".pi")
+      ? "pi-config"
+      : firstPath.includes(".factory")
+        ? "factory-config"
+        : "amp-config";
+  }
 
   return {
     baseUrl,
     agentToken,
+    submitToken,
     projectId,
     projectSlug,
     actorId,
@@ -169,12 +192,25 @@ export function maskToken(token: string): string {
   return `${token.slice(0, 4)}…${token.slice(-4)}`;
 }
 
+export function toStoredConfig(config: AgentConfig): StoredConfig {
+  return {
+    baseUrl: config.baseUrl,
+    agentToken: config.agentToken,
+    submitToken: config.submitToken,
+    projectId: config.projectId ?? null,
+    projectSlug: config.projectSlug ?? null,
+    actorId: config.actorId,
+    actorName: config.actorName,
+  };
+}
+
 export function summarizeConfig(config: AgentConfig): string {
   return [
     `config: ${config.configPath || "(none)"}`,
     `source: ${config.source || "default"}`,
     `baseUrl: ${config.baseUrl}`,
-    `token: ${maskToken(config.agentToken)}`,
+    `agentToken: ${maskToken(config.agentToken)}`,
+    `submitToken: ${maskToken(config.submitToken || "")}`,
     `projectId: ${config.projectId ?? "(none)"}`,
     `projectSlug: ${config.projectSlug ?? "(none)"}`,
     `actor: ${config.actorName} (${config.actorId})`,
@@ -187,6 +223,7 @@ export function saveProjectConfig(cwd: string, data: StoredConfig): string {
   const payload: StoredConfig = {
     baseUrl: data.baseUrl?.replace(/\/$/, ""),
     agentToken: data.agentToken,
+    submitToken: data.submitToken,
     projectId: data.projectId ?? null,
     projectSlug: data.projectSlug ?? null,
     actorId: data.actorId,

@@ -1,6 +1,7 @@
 {
   "baseUrl": "https://hono-feedback-duck.mp2026new.workers.dev",
   "agentToken": "REPLACE_WITH_PERSONAL_TOKEN",
+  "submitToken": "REPLACE_WITH_PROJECT_SUBMIT_TOKEN",
   "projectId": 1,
   "projectSlug": "demo",
   "actorId": "local-amp",
