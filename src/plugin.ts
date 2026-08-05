@@ -157,10 +157,44 @@ async function injectIntoThread(
   thread: PluginThread,
   text: string,
 ): Promise<void> {
-  await thread.appendUserMessage(
-    { type: "user-message", content: text },
-    { steer: true },
-  );
+  const message = { type: "user-message" as const, content: text };
+  // Prefer plain append first (idle threads). Fall back to steered appendUserMessage
+  // when the thread is busy so the claim brief is not lost behind in-flight work.
+  try {
+    if (typeof thread.append === "function") {
+      await thread.append([message]);
+      return;
+    }
+  } catch {
+    // fall through
+  }
+  await thread.appendUserMessage(message, { steer: true });
+}
+
+/** Resolve a thread to inject into; create one if the command has no active thread. */
+async function resolveInjectThread(
+  amp: PluginAPI,
+  ctx: PluginCommandContext,
+): Promise<PluginThread | undefined> {
+  if (ctx.thread) return ctx.thread;
+  if (amp.activeThread.current?.id) {
+    try {
+      return amp.threads.get(amp.activeThread.current.id);
+    } catch {
+      // fall through to create
+    }
+  }
+  // Command palette with no open thread: open a visible medium thread.
+  try {
+    const agent =
+      typeof amp.getBuiltinAgent === "function"
+        ? amp.getBuiltinAgent("medium")
+        : amp.experimental?.getBuiltinAgent?.("medium");
+    if (!agent) return undefined;
+    return await agent.createThread({ show: true });
+  } catch {
+    return undefined;
+  }
 }
 
 async function resolveWorkspaceUploadPath(amp: PluginAPI, inputPath: string): Promise<string> {
@@ -309,14 +343,10 @@ async function claimAndInject(
   item: FeedbackItem,
   options: { sourceCommand: string; statusItem?: StatusItem | null },
 ): Promise<void> {
-  const targetThread = ctx.thread ?? (
-    amp.activeThread.current?.id
-      ? amp.threads.get(amp.activeThread.current.id)
-      : undefined
-  );
+  const targetThread = await resolveInjectThread(amp, ctx);
   if (!targetThread) {
     await ctx.ui.notify(
-      "No active thread. Send any message to create one, then re-run the feedback command.",
+      "No active thread and could not create one. Open or start a thread, then re-run the feedback command.",
     );
     return;
   }
@@ -333,7 +363,19 @@ async function claimAndInject(
     },
   });
 
-  await injectIntoThread(targetThread, prepared.text);
+  try {
+    await injectIntoThread(targetThread, prepared.text);
+  } catch (err) {
+    // Claim already succeeded server-side — keep local claim and surface inject error.
+    stateStore.get(requestedThreadId).setClaimed(prepared.working.id);
+    refreshClaimStatus(amp, stateStore, options.statusItem ?? null);
+    await ctx.ui.notify(
+      `Claimed #${displayNo(prepared.working)} but failed to inject into thread: ${errMsg(err)}. ` +
+        `Use feedback_get id=${prepared.working.id} or re-run claim with inject.`,
+    );
+    return;
+  }
+
   stateStore.get(requestedThreadId).setClaimed(prepared.working.id);
   refreshClaimStatus(amp, stateStore, options.statusItem ?? null);
 
@@ -996,7 +1038,15 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
             },
           });
 
-          await injectIntoThread(ctx.thread, prepared.text);
+          let injected = true;
+          let injectError: string | undefined;
+          try {
+            await injectIntoThread(ctx.thread, prepared.text);
+          } catch (err) {
+            injected = false;
+            injectError = errMsg(err);
+            amp.logger.log(`[feedback-workbench] inject failed: ${injectError}`);
+          }
           stateStore.get(ctx.thread.id).setClaimed(prepared.working.id);
           refreshClaimStatus(amp, stateStore, statusItem);
 
@@ -1005,7 +1055,8 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
               {
                 ok: true,
                 action: "claim",
-                injected: true,
+                injected,
+                inject_error: injectError,
                 item: {
                   id: prepared.working.id,
                   project_seq: prepared.working.project_seq,
@@ -1020,9 +1071,11 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
                   total: prepared.attachmentCount,
                   images: prepared.imageCount,
                 },
-                message:
-                  "Title, body, and attachment paths were injected into this thread as a user message. " +
-                  "Open listed images with Read/view_media before coding.",
+                // Always include the brief so the model has title/body even if thread inject failed.
+                brief: prepared.text,
+                message: injected
+                  ? "Title, body, and attachment paths were injected into this thread as a user message. Open listed images with Read/view_media before coding."
+                  : `Claimed on server but thread inject failed (${injectError}). Full brief is in the "brief" field below — use it as the task context.`,
               },
               null,
               2,
