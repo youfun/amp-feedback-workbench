@@ -100,12 +100,22 @@ describe("Amp thread metadata and attachment upload", () => {
         createAgent() { throw new Error("unused"); },
         getBuiltinAgent() { throw new Error("unused"); },
         registerAgentMode() { return { unsubscribe() {} }; },
-        activeThread: { current: null },
-        threads: {} as any,
+        activeThread: { current: null, subscribe() { return { unsubscribe() {} }; } },
+        experimental: {
+          createStatusItem() {
+            return { update() {}, unsubscribe() {} };
+          },
+        },
+        threads: {
+          get(id: string) {
+            return { id, async appendUserMessage() {} };
+          },
+        } as any,
         createWebhook() { throw new Error("unused"); },
       } as any);
 
-      await tools.get("feedback_claim").execute({ id: 12 }, { thread: { id: "T-claim" } });
+      // inject=false: this test only needs claim state for upload default id
+      await tools.get("feedback_claim").execute({ id: 12, inject: false }, { thread: { id: "T-claim" } });
       const result = await tools.get("feedback_upload_attachment").execute(
         { local_path: smallPath },
         { thread: { id: "T-claim" } },

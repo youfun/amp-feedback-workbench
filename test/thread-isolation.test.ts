@@ -69,7 +69,14 @@ function makeAmp(opts: { activeThreadId?: string | null } = {}) {
         };
       },
     },
-    threads: {} as any,
+    threads: {
+      get(id: string) {
+        return {
+          id,
+          async appendUserMessage() {},
+        };
+      },
+    } as any,
     createWebhook() {
       throw new Error("unused");
     },
@@ -107,9 +114,39 @@ describe("thread isolation and progress sync", () => {
               item: {
                 id: Number(id),
                 status: body.action === "comment" ? "claimed" : "claimed",
+                title: `Title ${id}`,
+                note: `Body ${id}`,
+                feedback_type: "bug",
+                project_id: "p1",
+                inserted_at: "2026-01-01T00:00:00Z",
               },
               event: { claim_round: 1 },
               events: [],
+            }),
+        };
+      }
+      // getFeedback during claim inject
+      const getMatch = url.match(/\/api\/feedback\/(\d+)$/);
+      if (getMatch) {
+        const id = Number(getMatch[1]);
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () =>
+            JSON.stringify({
+              item: {
+                id,
+                status: "claimed",
+                title: `Title ${id}`,
+                note: `Body ${id}`,
+                feedback_type: "bug",
+                project_id: "p1",
+                inserted_at: "2026-01-01T00:00:00Z",
+                attachments: [],
+              },
+              events: [],
+              attachments: [],
             }),
         };
       }
@@ -118,8 +155,9 @@ describe("thread isolation and progress sync", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { tools, events } = makeAmp();
-    await tools.get("feedback_claim").execute({ id: 12 }, { thread: { id: "T-1" } });
-    await tools.get("feedback_claim").execute({ id: 99 }, { thread: { id: "T-2" } });
+    // inject=false keeps this test focused on claim isolation + progress sync
+    await tools.get("feedback_claim").execute({ id: 12, inject: false }, { thread: { id: "T-1" } });
+    await tools.get("feedback_claim").execute({ id: 99, inject: false }, { thread: { id: "T-2" } });
 
     expect(await tools.get("feedback_current_claimed_id").execute({}, { thread: { id: "T-1" } })).toContain(
       "12",
@@ -155,7 +193,7 @@ describe("thread isolation and progress sync", () => {
   it("injects claimed-context on agent.start and updates status item", async () => {
     process.env.AMP_FEEDBACK_AGENT_TOKEN = "pt_test";
     process.env.AMP_FEEDBACK_BASE_URL = "https://feedback.example.test";
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith("/actions")) {
         const id = url.match(/feedback\/(\d+)\/actions/)?.[1] || "12";
@@ -165,7 +203,7 @@ describe("thread isolation and progress sync", () => {
           statusText: "OK",
           text: async () =>
             JSON.stringify({
-              item: { id: Number(id), status: "claimed" },
+              item: { id: Number(id), status: "claimed", title: "T", note: "N", feedback_type: "bug", project_id: "p", inserted_at: "2026-01-01T00:00:00Z" },
               event: { claim_round: 1 },
               events: [],
             }),
@@ -176,7 +214,7 @@ describe("thread isolation and progress sync", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { amp, tools, events, statusUpdates } = makeAmp({ activeThreadId: "T-1" });
-    await tools.get("feedback_claim").execute({ id: 12 }, { thread: { id: "T-1" } });
+    await tools.get("feedback_claim").execute({ id: 12, inject: false }, { thread: { id: "T-1" } });
 
     const startResult = await events.get("agent.start")(
       { thread: { id: "T-1" }, message: "work on it", id: 1 },
@@ -191,5 +229,84 @@ describe("thread isolation and progress sync", () => {
 
     amp.setActiveThread(null);
     expect(statusUpdates.at(-1)?.text).toBe("fb: —");
+  });
+
+  it("feedback_claim injects title, body, and attachment guidance into the thread", async () => {
+    process.env.AMP_FEEDBACK_AGENT_TOKEN = "pt_test";
+    process.env.AMP_FEEDBACK_BASE_URL = "https://feedback.example.test";
+    const injected: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/actions")) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () =>
+            JSON.stringify({
+              item: {
+                id: 12,
+                status: "claimed",
+                title: "Login button broken",
+                note: "Clicking Sign in does nothing on Safari",
+                feedback_type: "bug",
+                project_id: "p1",
+                inserted_at: "2026-01-01T00:00:00Z",
+                screenshot_url: null,
+                attachments: [],
+              },
+              event: { claim_round: 2 },
+              events: [],
+            }),
+        };
+      }
+      if (/\/api\/feedback\/12$/.test(url)) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          text: async () =>
+            JSON.stringify({
+              item: {
+                id: 12,
+                status: "claimed",
+                title: "Login button broken",
+                note: "Clicking Sign in does nothing on Safari",
+                feedback_type: "bug",
+                project_id: "p1",
+                inserted_at: "2026-01-01T00:00:00Z",
+                attachments: [],
+              },
+              events: [],
+              attachments: [],
+            }),
+        };
+      }
+      throw new Error(`Unexpected fetch ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { tools } = makeAmp();
+    // Override thread append capture via tool context
+    const result = await tools.get("feedback_claim").execute(
+      { id: 12 },
+      {
+        thread: {
+          id: "T-inj",
+          async appendUserMessage(msg: { content: string }) {
+            injected.push(msg.content);
+          },
+        },
+      },
+    );
+
+    expect(result).toContain('"injected": true');
+    expect(result).toContain("Login button broken");
+    expect(injected).toHaveLength(1);
+    expect(injected[0]).toContain("## Title");
+    expect(injected[0]).toContain("Login button broken");
+    expect(injected[0]).toContain("## User description / body");
+    expect(injected[0]).toContain("Clicking Sign in does nothing on Safari");
+    expect(injected[0]).toContain("Required reading before coding");
   });
 });

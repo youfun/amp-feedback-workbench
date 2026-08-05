@@ -237,6 +237,84 @@ async function resolveRelease(
   return client.getRelease(projectId, release.id);
 }
 
+type ClaimInjectResult = {
+  working: FeedbackItem;
+  claimRound: number | null;
+  events: Awaited<ReturnType<FeedbackClient["getFeedback"]>>["events"];
+  text: string;
+  attachmentCount: number;
+  imageCount: number;
+};
+
+/**
+ * Claim on server, load full detail (title/body/attachments), download files,
+ * and build the user-message prompt that should be injected into the thread.
+ */
+async function prepareClaimInject(
+  amp: PluginAPI,
+  client: FeedbackClient,
+  config: AgentConfig,
+  item: FeedbackItem,
+  options: {
+    threadId: ThreadID;
+    claimNote: string;
+    extraPrompt?: string | null;
+    onAttachmentError?: (message: string) => void | Promise<void>;
+  },
+): Promise<ClaimInjectResult> {
+  const actor = actorFromConfig(config);
+  let working = item;
+  let claimRound: number | null = item.claim_count ?? null;
+  let events: ClaimInjectResult["events"] = [];
+
+  const claimed = await client.claim(
+    item.id,
+    actor,
+    options.claimNote,
+    currentAgentSessionMeta(options.threadId),
+  );
+  working = claimed.item;
+  claimRound = claimed.event?.claim_round ?? working.claim_count ?? null;
+  events = claimed.events || [];
+
+  try {
+    const detail = await client.getFeedback(working.id);
+    working = {
+      ...detail.item,
+      screenshot_url:
+        detail.item.screenshot_url ?? detail.screenshot_url ?? working.screenshot_url,
+      attachments: detail.attachments || detail.item.attachments || working.attachments || [],
+    };
+    events = detail.events || events;
+  } catch {
+    // keep claimed payload — still inject whatever fields we have
+  }
+
+  let text = buildInjectMessage(working, {
+    projectSlug: config.projectSlug,
+    claimRound,
+    extraPrompt: options.extraPrompt,
+    events,
+  });
+
+  let attachmentCount = 0;
+  let imageCount = 0;
+  try {
+    const cwd = workspaceRootPath(amp) || config.cwd || process.cwd();
+    const resolved = await downloadAttachments(config, working, cwd);
+    attachmentCount = resolved.files.length;
+    imageCount = resolved.files.filter((f) => f.isImage).length;
+    text += formatAttachmentPathsBlock(resolved.files);
+    if (resolved.notes.length) {
+      text += `\nAttachment notes:\n- ${resolved.notes.join("\n- ")}\n`;
+    }
+  } catch (err) {
+    await options.onAttachmentError?.(errMsg(err));
+  }
+
+  return { working, claimRound, events, text, attachmentCount, imageCount };
+}
+
 async function claimAndInject(
   amp: PluginAPI,
   ctx: PluginCommandContext,
@@ -258,60 +336,29 @@ async function claimAndInject(
     return;
   }
   const requestedThreadId = targetThread.id;
-  const actor = actorFromConfig(config);
-  let working = item;
-  let claimRound: number | null = item.claim_count ?? null;
-  let events: Awaited<ReturnType<typeof client.getFeedback>>["events"] = [];
 
   await ctx.ui.notify(`Claiming #${displayNo(item)}…`);
-  const claimed = await client.claim(
-    item.id,
-    actor,
-    `Claimed via Amp ${options.sourceCommand}`,
-    currentAgentSessionMeta(requestedThreadId),
-  );
-  working = claimed.item;
-  claimRound = claimed.event?.claim_round ?? working.claim_count ?? null;
-  events = claimed.events || [];
-
-  try {
-    const detail = await client.getFeedback(working.id);
-    working = {
-      ...detail.item,
-      screenshot_url:
-        detail.item.screenshot_url ?? detail.screenshot_url ?? working.screenshot_url,
-      attachments: detail.attachments || detail.item.attachments || working.attachments || [],
-    };
-    events = detail.events || events;
-  } catch {
-    // keep claimed payload
-  }
-
   const extraPrompt = await maybeExtraPrompt(ctx);
-  let text = buildInjectMessage(working, {
-    projectSlug: config.projectSlug,
-    claimRound,
+  const prepared = await prepareClaimInject(amp, client, config, item, {
+    threadId: requestedThreadId,
+    claimNote: `Claimed via Amp ${options.sourceCommand}`,
     extraPrompt,
-    events,
+    onAttachmentError: async (message) => {
+      await ctx.ui.notify(`Attachment download skipped: ${message}`);
+    },
   });
 
-  try {
-    const cwd = workspaceRootPath(amp) || config.cwd || process.cwd();
-    const resolved = await downloadAttachments(config, working, cwd);
-    text += formatAttachmentPathsBlock(resolved.files);
-    if (resolved.notes.length) {
-      text += `\nAttachment notes:\n- ${resolved.notes.join("\n- ")}\n`;
-    }
-  } catch (err) {
-    await ctx.ui.notify(`Attachment download skipped: ${errMsg(err)}`);
-  }
-
-  await injectIntoThread(targetThread, text);
-  stateStore.get(requestedThreadId).setClaimed(working.id);
+  await injectIntoThread(targetThread, prepared.text);
+  stateStore.get(requestedThreadId).setClaimed(prepared.working.id);
   refreshClaimStatus(amp, stateStore, options.statusItem ?? null);
 
+  const attHint =
+    prepared.attachmentCount > 0
+      ? `, attachments=${prepared.attachmentCount} (${prepared.imageCount} images)`
+      : "";
   await ctx.ui.notify(
-    `Feedback #${displayNo(working)} claimed & injected (status=${working.status}, claims=${working.claim_count ?? "?"})`,
+    `Feedback #${displayNo(prepared.working)} claimed & injected ` +
+      `(status=${prepared.working.status}, claims=${prepared.working.claim_count ?? "?"}${attHint})`,
   );
 }
 
@@ -902,8 +949,16 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
 
   amp.registerTool({
     name: "feedback_claim",
-    description: "Claim a feedback item. Sets the current claim only for the invoking Amp thread.",
-    inputSchema: objectSchema({ id: num("Feedback id"), note: str("Optional claim note") }, ["id"]),
+    description:
+      "Claim a feedback item for this Amp thread, download attachments, and inject title/body/screenshot paths into the thread as a user message (default). Pass inject=false to only claim without injecting.",
+    inputSchema: objectSchema(
+      {
+        id: num("Feedback id"),
+        note: str("Optional claim note"),
+        inject: bool("Inject title/body/attachments into the thread (default true)"),
+      },
+      ["id"],
+    ),
     async execute(input, ctx) {
       try {
         return await withConfig(async (config, client) => {
@@ -912,15 +967,82 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
             typeof input.note === "string" && input.note.trim()
               ? input.note
               : "Claimed via Amp feedback_claim tool";
-          const result = await client.claim(
-            id,
-            actorFromConfig(config),
-            note,
-            currentAgentSessionMeta(ctx.thread.id),
-          );
-          stateStore.get(ctx.thread.id).setClaimed(result.item.id);
+          const shouldInject = input.inject !== false;
+
+          if (!shouldInject) {
+            const result = await client.claim(
+              id,
+              actorFromConfig(config),
+              note,
+              currentAgentSessionMeta(ctx.thread.id),
+            );
+            stateStore.get(ctx.thread.id).setClaimed(result.item.id);
+            refreshClaimStatus(amp, stateStore, statusItem);
+            return toolText(
+              JSON.stringify(
+                {
+                  ok: true,
+                  action: "claim",
+                  injected: false,
+                  item: result.item,
+                  event: result.event,
+                  hint: "Pass inject=true (default) to load title/body/attachments into the thread.",
+                },
+                null,
+                2,
+              ),
+            );
+          }
+
+          // Prefer full detail before claim when we only have an id.
+          let seed: FeedbackItem = { id, project_id: null, status: "pending", note: null, url: null, title: null, feedback_type: "bug", inserted_at: new Date().toISOString() };
+          try {
+            const detail = await client.getFeedback(id);
+            seed = detail.item;
+          } catch {
+            // claim will still run with id
+          }
+
+          const prepared = await prepareClaimInject(amp, client, config, seed, {
+            threadId: ctx.thread.id,
+            claimNote: note,
+            onAttachmentError: (message) => {
+              amp.logger.log(`[feedback-workbench] attachment download skipped: ${message}`);
+            },
+          });
+
+          await injectIntoThread(ctx.thread, prepared.text);
+          stateStore.get(ctx.thread.id).setClaimed(prepared.working.id);
           refreshClaimStatus(amp, stateStore, statusItem);
-          return toolText(JSON.stringify({ ok: true, action: "claim", item: result.item, event: result.event }, null, 2));
+
+          return toolText(
+            JSON.stringify(
+              {
+                ok: true,
+                action: "claim",
+                injected: true,
+                item: {
+                  id: prepared.working.id,
+                  project_seq: prepared.working.project_seq,
+                  title: prepared.working.title,
+                  note: prepared.working.note,
+                  status: prepared.working.status,
+                  feedback_type: prepared.working.feedback_type,
+                  claim_count: prepared.working.claim_count,
+                },
+                claim_round: prepared.claimRound,
+                attachments: {
+                  total: prepared.attachmentCount,
+                  images: prepared.imageCount,
+                },
+                message:
+                  "Title, body, and attachment paths were injected into this thread as a user message. " +
+                  "Open listed images with Read/view_media before coding.",
+              },
+              null,
+              2,
+            ),
+          );
         });
       } catch (err) {
         return toolText(`Error: ${errMsg(err)}`);

@@ -187,15 +187,20 @@ feedback: Configure workbench
 
 1. 获取当前项目反馈列表；
 2. 领取所选反馈；
-3. 下载所有附件到 `tmp/feedback-workbench/`；
-4. 把需求、历史事件和附件绝对路径注入当前 Amp thread；
-5. 将该反馈记录为当前 thread 的 claim。
+3. 拉取完整详情（**title + body/note + attachments**）；
+4. 下载所有附件到 `tmp/feedback-workbench/`；
+5. 把标题、正文、历史事件和附件绝对路径注入当前 Amp thread（user user message）；
+6. 将该反馈记录为当前 thread 的 claim。
+
+注入内容包含独立的 `## Title` / `## User description / body` 段，以及读图指引（有截图时要求用 `Read` / `view_media` 打开本地路径）。
 
 也可以让 Agent 调用：
 
 ```text
-feedback_list → feedback_claim → feedback_get
+feedback_list → feedback_claim
 ```
+
+`feedback_claim` **默认会 inject**（`inject: true`）。若只要认领、不注入正文，传 `inject: false`。
 
 ### 2. 开始处理
 

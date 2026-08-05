@@ -364,7 +364,24 @@ export function formatAttachmentPathsBlock(files: CachedAttachment[]): string {
   if (!files.length) return "";
   const lines = files.map((file, index) => {
     const kind = file.isImage ? "image" : "file";
-    return `${index + 1}. [${kind}] ${file.filename} (${file.mediaType}, ${file.byteSize} bytes)\n   absolute path: ${file.path}`;
+    const how =
+      file.isImage
+        ? " → open with Read or view_media before deciding"
+        : " → open with Read if relevant";
+    return (
+      `${index + 1}. [${kind}] ${file.filename} (${file.mediaType}, ${file.byteSize} bytes)${how}\n` +
+      `   absolute path: ${file.path}`
+    );
   });
-  return `\nAttachments saved under project tmp (absolute paths — open/read these files):\n${lines.join("\n")}\n`;
+  const images = files.filter((f) => f.isImage);
+  const imageHint =
+    images.length > 0
+      ? `\n**Screenshots (${images.length}):** you MUST view each image path above with the Read or view_media tool — do not guess UI from text alone.\n`
+      : "";
+  return (
+    `\n## Attachments\n` +
+    `Saved under project tmp (absolute paths):\n` +
+    `${lines.join("\n")}\n` +
+    imageHint
+  );
 }

@@ -60,30 +60,43 @@ export function buildInjectMessage(
     ? `\nAcceptance criteria:\n${item.acceptance_criteria}`
     : "";
 
+  const titleLine = (item.title || "").trim() || "(no title)";
+  const body = (item.note || "").trim() || "(no text body)";
+
   return `Please process this user feedback.
 
-Issue #: ${displayNo(item)}
-Feedback ID (internal): ${item.id}
-Project ID: ${item.project_id ?? "n/a"}
-Project slug: ${options.projectSlug || "n/a"}
-Page URL: ${item.url || "n/a"}
-Title: ${item.title || "n/a"}
-Type: ${item.feedback_type}
-Priority: ${item.priority || "n/a"}
-Status: ${item.status}
-Current assignee: ${item.current_assignee || "n/a"}
-Claim count: ${item.claim_count ?? 0}
-Claim round (this open): ${options.claimRound ?? item.claim_count ?? "n/a"}
-User: ${item.user_email || item.user_id || "anonymous"}
-Env: ${item.env || "n/a"}
-Build: ${item.build_version || "n/a"}
-Inserted at: ${item.inserted_at}
+## Issue
+- Issue #: ${displayNo(item)}
+- Feedback ID (internal): ${item.id}
+- Project ID: ${item.project_id ?? "n/a"}
+- Project slug: ${options.projectSlug || "n/a"}
+- Page URL: ${item.url || "n/a"}
+- **Title:** ${titleLine}
+- Type: ${item.feedback_type}
+- Priority: ${item.priority || "n/a"}
+- Status: ${item.status}
+- Current assignee: ${item.current_assignee || "n/a"}
+- Claim count: ${item.claim_count ?? 0}
+- Claim round (this open): ${options.claimRound ?? item.claim_count ?? "n/a"}
+- User: ${item.user_email || item.user_id || "anonymous"}
+- Env: ${item.env || "n/a"}
+- Build: ${item.build_version || "n/a"}
+- Inserted at: ${item.inserted_at}
 ${ac}
-User description:
-${item.note || "(no text note)"}
+
+## Title
+${titleLine}
+
+## User description / body
+${body}
 ${meta}${recentEvents}
 
-Workflow tools available:
+## Required reading before coding
+1. Read the Title and User description above in full.
+2. If Attachments are listed below, open every **image** with the Read or view_media tool (do not skip screenshots).
+3. Then investigate the codebase and implement/verify.
+
+## Workflow tools
 - feedback_start_processing
 - feedback_add_ai_analysis
 - feedback_add_comment
@@ -95,9 +108,7 @@ Workflow tools available:
 - release_list / release_get / release_create / release_add_items
 - release_stage_current / release_draft_changelog / release_publish (human-only)
 
-Please analyze the issue, propose a fix or next step, and keep the feedback workflow updated via tools when appropriate.
 Use Feedback ID (internal) with workflow tools.
-
 Release safety: changed-file progress comments are not release membership. Only explicit release_add_items or release_stage_current may stage an issue.
 Never mark done yourself — verification is Web/admin only.${extra}
 `;
