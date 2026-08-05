@@ -7,11 +7,13 @@ Amp plugin for `hono_feedback_duck` with parity-focused workflow support from `p
 ## What it covers
 
 - thread-scoped feedback claiming
-- feedback submission with a separate submit token
+- feedback submission with a separate submit token (title required; note/body optional)
 - attachment download and upload
 - delivery links + submit-for-review contract
 - release listing/staging/changelog helpers
 - automatic progress comments from successful file-modifying tool results
+- status-bar chip for the active thread's claimed feedback (`fb #id · Nf · sync`)
+- hidden `agent.start` context injection when the current thread already has a claim
 
 ## 快速开始
 

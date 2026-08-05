@@ -1,7 +1,9 @@
 import type {
+  AgentStartResult,
   PluginAPI,
   PluginCommandContext,
   PluginThread,
+  StatusItem,
   ThreadID,
   ToolCallEvent,
   ToolResultEvent,
@@ -95,6 +97,45 @@ function currentClaimedId(
   threadId?: ThreadID,
 ): number | null {
   return threadId ? stateStore.get(threadId).claimedId() : null;
+}
+
+
+function statusItemApi(amp: PluginAPI): ((initial?: { text: string; url?: string }) => StatusItem) | undefined {
+  const experimental = amp.experimental as
+    | { createStatusItem?: (initial?: { text: string; url?: string }) => StatusItem }
+    | undefined;
+  if (typeof experimental?.createStatusItem === "function") {
+    return experimental.createStatusItem.bind(experimental);
+  }
+  return undefined;
+}
+
+function refreshClaimStatus(
+  amp: PluginAPI,
+  stateStore: ThreadStateStore,
+  statusItem: StatusItem | null,
+): void {
+  if (!statusItem) return;
+  const threadId = amp.activeThread.current?.id;
+  if (!threadId) {
+    statusItem.update({ text: "fb: —", url: "command:fb" });
+    return;
+  }
+  const state = stateStore.maybe(threadId);
+  const claimed = state?.claimedId() ?? null;
+  if (claimed == null) {
+    statusItem.update({
+      text: "fb: none",
+      url: "command:fb",
+    });
+    return;
+  }
+  const sync = state?.isEnabled() ? "sync" : "off";
+  const files = state?.changedFiles().length ?? 0;
+  statusItem.update({
+    text: `fb #${claimed} · ${files}f · ${sync}`,
+    url: "command:fb-progress",
+  });
 }
 
 function requireClaimedId(
@@ -203,7 +244,7 @@ async function claimAndInject(
   client: FeedbackClient,
   config: AgentConfig,
   item: FeedbackItem,
-  options: { sourceCommand: string },
+  options: { sourceCommand: string; statusItem?: StatusItem | null },
 ): Promise<void> {
   const targetThread = ctx.thread ?? (
     amp.activeThread.current?.id
@@ -267,6 +308,7 @@ async function claimAndInject(
 
   await injectIntoThread(targetThread, text);
   stateStore.get(requestedThreadId).setClaimed(working.id);
+  refreshClaimStatus(amp, stateStore, options.statusItem ?? null);
 
   await ctx.ui.notify(
     `Feedback #${displayNo(working)} claimed & injected (status=${working.status}, claims=${working.claim_count ?? "?"})`,
@@ -289,6 +331,42 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
     { threadId: ThreadID; claimedId: number; generation: number }
   >();
   amp.logger.log("[feedback-workbench] plugin initialized");
+
+  const createStatusItem = statusItemApi(amp);
+  const statusItem = createStatusItem
+    ? createStatusItem({ text: "fb: —", url: "command:fb" })
+    : null;
+  const activeThreadSub = amp.activeThread?.subscribe?.((active) => {
+    refreshClaimStatus(amp, stateStore, statusItem);
+    if (!active) return;
+  });
+  refreshClaimStatus(amp, stateStore, statusItem);
+
+  amp.on("session.start", (event) => {
+    // Keep the status chip in sync when the user focuses a thread.
+    refreshClaimStatus(amp, stateStore, statusItem);
+    amp.logger.log(`[feedback-workbench] session.start ${event.thread.id}`);
+  });
+
+  amp.on("agent.start", (event): AgentStartResult => {
+    const claimed = currentClaimedId(stateStore, event.thread.id);
+    if (claimed == null) return {};
+    const state = stateStore.get(event.thread.id);
+    const files = state.changedFiles();
+    const fileHint =
+      files.length > 0
+        ? ` Recorded changed files (${files.length}): ${files.slice(0, 8).join(", ")}${files.length > 8 ? "…" : ""}.`
+        : "";
+    return {
+      message: {
+        content:
+          `[feedback-workbench] This thread has claimed feedback id ${claimed}. ` +
+          `Use feedback_* tools with that id (or omit id to default to it). ` +
+          `Finish with feedback_submit_for_review — never mark done.${fileHint}`,
+        display: false,
+      },
+    };
+  });
 
   amp.on("tool.call", (event: ToolCallEvent) => {
     const state = stateStore.maybe(event.thread.id);
@@ -342,6 +420,7 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
           generation: toolClaim.generation,
         },
       });
+      refreshClaimStatus(amp, stateStore, statusItem);
     } catch (err) {
       amp.logger.log("[feedback-workbench] progress sync skipped", errMsg(err));
     }
@@ -350,6 +429,8 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
   amp.onDispose(() => {
     toolClaims.clear();
     stateStore.clear();
+    activeThreadSub?.unsubscribe?.();
+    statusItem?.unsubscribe?.();
   });
 
   amp.registerCommand(
@@ -474,7 +555,7 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
           if (!picked || picked === "cancel") return;
           const item = ordered[labels.indexOf(picked)];
           if (!item) throw new Error("Invalid selection");
-          await claimAndInject(amp, ctx, stateStore, client, config, item, { sourceCommand: "fb" });
+          await claimAndInject(amp, ctx, stateStore, client, config, item, { sourceCommand: "fb", statusItem });
         });
       } catch (err) {
         await ctx.ui.notify(errMsg(err));
@@ -505,6 +586,7 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
           const detail = await client.getFeedback(id);
           await claimAndInject(amp, ctx, stateStore, client, config, detail.item, {
             sourceCommand: "fb-open",
+            statusItem,
           });
         });
       } catch (err) {
@@ -535,6 +617,7 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
           const ordered = [...items].sort((a, b) => a.inserted_at.localeCompare(b.inserted_at));
           await claimAndInject(amp, ctx, stateStore, client, config, ordered[0]!, {
             sourceCommand: "fb-next",
+            statusItem,
           });
         });
       } catch (err) {
@@ -576,6 +659,7 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
           if (!item) return;
           await claimAndInject(amp, ctx, stateStore, client, config, item, {
             sourceCommand: "fb-mine",
+            statusItem,
           });
         });
       } catch (err) {
@@ -595,18 +679,25 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
       try {
         await withConfig(
           async (_config, client) => {
-            const note = (
+            const title = (
               await ctx.ui.input({
-                title: "Feedback note",
-                helpText: "Required issue description",
+                title: "Feedback title",
+                helpText: "Required short summary",
                 submitButtonText: "Next",
               })
             )?.trim();
-            if (!note) {
-              await ctx.ui.notify("Feedback note is required.");
+            if (!title) {
+              await ctx.ui.notify("Feedback title is required.");
               return;
             }
-            const title = (await ctx.ui.input({ title: "Optional title", submitButtonText: "Next" })) || undefined;
+            const note =
+              (
+                await ctx.ui.input({
+                  title: "Optional body",
+                  helpText: "Optional longer description",
+                  submitButtonText: "Next",
+                })
+              )?.trim() || undefined;
             const feedbackType =
               (await ctx.ui.select({
                 title: "Feedback type",
@@ -614,8 +705,8 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
                 initialValue: "bug",
               })) || "bug";
             const result = await client.submitFeedback({
-              note,
               title,
+              note,
               feedbackType,
               meta: currentAgentSessionMeta(commandThreadId(amp, ctx)),
             });
@@ -665,6 +756,7 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
       if (action === "on") state.setEnabled(true);
       if (action === "off") state.setEnabled(false);
       if (action === "clear") state.clearChangedFiles();
+      refreshClaimStatus(amp, stateStore, statusItem);
       await ctx.ui.notify(
         action === "clear"
           ? `Cleared recorded changed files for ${threadId}.`
@@ -827,6 +919,7 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
             currentAgentSessionMeta(ctx.thread.id),
           );
           stateStore.get(ctx.thread.id).setClaimed(result.item.id);
+          refreshClaimStatus(amp, stateStore, statusItem);
           return toolText(JSON.stringify({ ok: true, action: "claim", item: result.item, event: result.event }, null, 2));
         });
       } catch (err) {
@@ -1037,6 +1130,7 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
         const file = String(input.file || "").trim();
         if (!file) return toolText("Error: file is required");
         const wasNew = state.recordFile(file, root);
+        refreshClaimStatus(amp, stateStore, statusItem);
         return toolText(
           wasNew
             ? `Recorded change: ${toRepoRelativePath(file, root)}`
@@ -1094,27 +1188,28 @@ export default function feedbackWorkbenchPlugin(amp: PluginAPI) {
   amp.registerTool({
     name: "feedback_submit",
     description:
-      "Submit a new feedback item / bug / issue using an explicit token override or the configured submitToken. Never falls back to agentToken.",
+      "Submit a new feedback item / bug / issue using an explicit token override or the configured submitToken. Never falls back to agentToken. Title is required; note/body is optional.",
     inputSchema: objectSchema(
       {
-        note: str("Required issue description"),
-        title: str("Optional title"),
+        title: str("Required short issue title"),
+        note: str("Optional longer description / body"),
         feedback_type: str('Type: "bug" | "feature" | "other"'),
         token: str("Optional submit token override"),
         project_id: num("Optional project ID override"),
       },
-      ["note"],
+      ["title"],
     ),
     async execute(input, ctx) {
       try {
         return await withConfig(
           async (_config, client) => {
+            const title = String(input.title || "").trim();
+            if (!title) return toolText("Error: title parameter is required.");
             const note = String(input.note || "").trim();
-            if (!note) return toolText("Error: note parameter is required.");
             const result = await client.submitFeedback(
               {
-                note,
-                title: typeof input.title === "string" ? input.title : undefined,
+                title,
+                note: note || undefined,
                 feedbackType:
                   typeof input.feedback_type === "string" ? input.feedback_type : "bug",
                 project_id:

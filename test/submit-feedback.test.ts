@@ -55,7 +55,10 @@ describe("submitFeedback client API", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await createClient(dummyConfig).submitFeedback({ note: "Simple issue note" });
+    await createClient(dummyConfig).submitFeedback({
+      title: "Simple issue",
+      note: "Simple issue note",
+    });
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:8787/api/feedback",
       expect.objectContaining({
@@ -64,7 +67,10 @@ describe("submitFeedback client API", () => {
     );
 
     await expect(
-      createClient({ ...dummyConfig, submitToken: undefined }).submitFeedback({ note: "Missing token" }),
+      createClient({ ...dummyConfig, submitToken: undefined }).submitFeedback({
+        title: "Missing token",
+        note: "Missing token",
+      }),
     ).rejects.toThrow(/No submitToken configured/);
     vi.unstubAllGlobals();
   });
