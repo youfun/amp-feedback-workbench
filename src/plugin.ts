@@ -179,21 +179,6 @@ async function resolveWorkspaceUploadPath(amp: PluginAPI, inputPath: string): Pr
   return realCandidate;
 }
 
-async function maybeExtraPrompt(ctx: PluginCommandContext): Promise<string> {
-  try {
-    return (
-      (await ctx.ui.input({
-        title: "Optional extra instructions",
-        helpText: "Empty to skip",
-        initialValue: "",
-        submitButtonText: "Continue",
-      })) || ""
-    ).trim();
-  } catch {
-    return "";
-  }
-}
-
 function releaseProjectId(config: AgentConfig, raw?: unknown): number | string {
   const value = raw == null || raw === "" ? config.projectId : raw;
   if (value == null || value === "") {
@@ -338,11 +323,11 @@ async function claimAndInject(
   const requestedThreadId = targetThread.id;
 
   await ctx.ui.notify(`Claiming #${displayNo(item)}…`);
-  const extraPrompt = await maybeExtraPrompt(ctx);
+  // No extra-instructions dialog: inject title/body immediately; operator can
+  // type follow-ups in the thread after claim.
   const prepared = await prepareClaimInject(amp, client, config, item, {
     threadId: requestedThreadId,
     claimNote: `Claimed via Amp ${options.sourceCommand}`,
-    extraPrompt,
     onAttachmentError: async (message) => {
       await ctx.ui.notify(`Attachment download skipped: ${message}`);
     },
